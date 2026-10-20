@@ -8,6 +8,146 @@ Roda só localmente: não há deploy, Docker nem banco externo.
 - Backend: Java 21, Spring Boot, Maven, H2 em memória
 - Frontend: React + Vite
 
+## Arquitetura
+
+Camadas do backend: `controller` recebe a requisição HTTP, `service` aplica as regras de negócio, `repository` fala com o banco. As regras de aptidão para doação (idade, peso, intervalo entre doações, limite anual, tatuagem recente, entre outras) são isoladas em classes próprias, uma por critério, em `service/regra`.
+
+### Diagrama de classes
+
+Modelo de domínio (`br.umc.hemovida.model`). O banco não aparece como classe porque é infraestrutura, acessada pelos repositórios, não parte do domínio.
+
+```mermaid
+classDiagram
+    class Doador {
+        -Long id
+        -String nome
+        -LocalDate dataNascimento
+        -Sexo sexo
+        -TipoSanguineo tipoSanguineo
+        -FatorRh fatorRh
+        -String telefone
+        +statusEm(LocalDate) StatusDoador
+        +historico() HistoricoDoacoes
+        +atualizarAposDoacao(Double, LocalDate)
+        +atualizar(...)
+    }
+
+    class Cpf {
+        -String numero
+        +Cpf(String)
+    }
+
+    class FichaClinica {
+        -Long id
+        -Double pesoEmQuilos
+        -boolean impedimentoDefinitivo
+        -LocalDate dataProximaDoacao
+        -LocalDate dataUltimaTatuagem
+        +atualizarAposDoacao(Double, LocalDate)
+        +atualizarDadosClinicos(Double, boolean, LocalDate)
+    }
+
+    class Doacao {
+        -Long id
+        -LocalDate dataDoacao
+        -String numeroBolsa
+        -Integer volumeEmMililitros
+        -String observacoes
+        -String pressaoArterial
+        -Double hemoglobina
+    }
+
+    class HistoricoDoacoes {
+        -List~Doacao~ doacoes
+        +estaVazio() boolean
+        +ultimaDoacao() Optional~Doacao~
+        +doacoesNosUltimos12Meses(LocalDate) List~Doacao~
+    }
+
+    class Sexo {
+        <<enumeration>>
+        MASCULINO
+        FEMININO
+    }
+
+    class TipoSanguineo {
+        <<enumeration>>
+        A
+        B
+        AB
+        O
+    }
+
+    class FatorRh {
+        <<enumeration>>
+        POSITIVO
+        NEGATIVO
+    }
+
+    class StatusDoador {
+        <<enumeration>>
+        APTO
+        INAPTO_TEMPORARIO
+        INAPTO_DEFINITIVO
+    }
+
+    Doador "1" *-- "1" Cpf : possui
+    Doador "1" o-- "0..1" FichaClinica : possui
+    Doador "1" --> "*" Doacao : acumula
+    Doador ..> HistoricoDoacoes : monta a partir das doações
+    HistoricoDoacoes o-- "*" Doacao
+    Doacao "*" --> "1" Doador : pertence a
+    Doador --> Sexo
+    Doador --> TipoSanguineo
+    Doador --> FatorRh
+    Doador ..> StatusDoador : resultado de statusEm()
+```
+
+`Cpf` é um value object (`record` imutável, `@Embeddable`), sem id ou ciclo de vida próprio: vive sempre dentro de um `Doador`. `Doador` e `FichaClinica` têm relação 1:1, com a ficha só existindo junto do doador. `Doador` e `Doacao` têm relação 1:N. `HistoricoDoacoes` não é entidade persistida: é montada sob demanda a partir da lista de doações de um doador.
+
+### Diagrama de sequência
+
+Fluxo de registro de uma doação (`POST /api/v1/doadores/{id}/doacoes`), o caminho que passa pelas regras de aptidão antes de gravar qualquer coisa.
+
+```mermaid
+sequenceDiagram
+    actor Atendente
+    participant Frontend as Frontend (React)
+    participant Controller as DoacaoController
+    participant Service as DoacaoService
+    participant DoadorRepo as DoadorRepository
+    participant Aptidao as AptidaoService
+    participant Regra as RegraAptidao (cada critério)
+    participant DoacaoRepo as DoacaoRepository
+
+    Atendente->>Frontend: preenche formulário de doação
+    Frontend->>Controller: POST /doadores/{id}/doacoes
+    Controller->>Service: registrar(idDoador, pedido)
+    Service->>DoadorRepo: findById(idDoador)
+    DoadorRepo-->>Service: Doador
+    Service->>Aptidao: verificar(doador, pedido)
+    loop para cada regra cadastrada
+        Aptidao->>Regra: verificar(doador, pedido, hoje)
+        Regra-->>Aptidao: Optional~Impedimento~
+    end
+    Aptidao-->>Service: Aptidao (apto, motivos, próximaDataApta)
+    alt doador não apto
+        Service-->>Controller: lança DoacaoNaoPermitidaException
+        Controller-->>Frontend: 422 com os motivos do impedimento
+        Frontend-->>Atendente: mostra os impedimentos
+    else doador apto
+        Service->>Service: monta Doacao (gera número da bolsa)
+        Service->>DoacaoRepo: save(doacao)
+        DoacaoRepo-->>Service: Doacao salva
+        Service->>Service: atualiza ficha clínica (próxima data apta)
+        Service-->>Controller: DoacaoResponse
+        Controller-->>Frontend: 201 Created
+        Frontend-->>Atendente: mostra número da bolsa
+    end
+```
+
+`AptidaoService` não decide sozinho: percorre todas as implementações de `RegraAptidao` e junta os impedimentos encontrados. Nada é gravado em `DoacaoRepository` se a doadora ou doador não estiver apto. O mesmo `AptidaoService` é reaproveitado pelo endpoint `GET /doadores/{id}/aptidao`, que roda esse fluxo só até a consulta, sem gravar a doação.
+
 ## Pré-requisitos
 
 - **Java 21** (`java -version` deve mostrar 21)
