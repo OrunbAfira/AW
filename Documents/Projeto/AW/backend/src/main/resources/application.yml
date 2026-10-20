@@ -1,0 +1,19 @@
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  datasource:
+    url: jdbc:h2:mem:hemovida
+  jpa:
+    hibernate:
+      ddl-auto: create
+    defer-datasource-initialization: true
+  sql:
+    init:
+      mode: always
+server:
+  error:
+    include-stacktrace: never
+logging:
+  level:
+    # O H2 coloca o valor violado (CPF, número da bolsa) na mensagem de unicidade, e este logger a imprime.
+    org.hibernate.orm.jdbc.error: "OFF"

@@ -1,0 +1,18 @@
+# Variáveis de ambiente
+.env
+
+# Build
+target/
+node_modules/
+dist/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+*.swp
+.DS_Store
